@@ -1,21 +1,24 @@
 package com.ridesharing.controller;
 
 import com.ridesharing.config.JwtUtil;
+import com.ridesharing.dto.BookingResponseDto;
+import com.ridesharing.dto.RideResponseDto;
 import com.ridesharing.entity.User;
 import com.ridesharing.repository.UserRepository;
-import com.ridesharing.repository.BookingRepository;
 import com.ridesharing.repository.RideRepository;
+import com.ridesharing.repository.BookingRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import com.ridesharing.entity.Transaction;
+import com.ridesharing.service.PayoutService;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @RestController
-@RequestMapping("/user")
+@RequestMapping("/api/user")
 @CrossOrigin(origins = "*")
 public class UserController {
 
@@ -23,40 +26,45 @@ public class UserController {
     private UserRepository userRepository;
 
     @Autowired
-    private JwtUtil jwtUtil;
+    private RideRepository rideRepository;
 
     @Autowired
     private BookingRepository bookingRepository;
 
     @Autowired
-    private RideRepository rideRepository;
+    private JwtUtil jwtUtil;
+    @Autowired
+    private PayoutService payoutService;
 
-    // ==================== GET PROFILE ====================
+    private Optional<User> resolveUser(String token) {
+        String subject = jwtUtil.extractUsername(token);
+        return userRepository.findByEmailOrPhone(subject, subject);
+    }
+
     @GetMapping("/profile")
-    public ResponseEntity<?> getProfile(@RequestHeader("Authorization") String authHeader) {
+    public ResponseEntity<?> getUserProfile(@RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = resolveUser(token);
             if (userOpt.isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));
             }
 
             User user = userOpt.get();
-            Map<String, Object> userData = new HashMap<>();
-            userData.put("id", user.getId());
-            userData.put("name", user.getName());
-            userData.put("email", user.getEmail());
-            userData.put("phone", user.getPhone());
-            userData.put("userType", user.getUserType());
-            userData.put("vehicleModel", user.getVehicleModel());
-            userData.put("licensePlate", user.getLicensePlate());
-            userData.put("vehicleCapacity", user.getVehicleCapacity());
-            userData.put("rating", user.getRating());
 
-            return ResponseEntity.ok(Map.of("user", userData));
+            Map<String, Object> profileData = new HashMap<>();
+            profileData.put("id", user.getId());
+            profileData.put("name", user.getName());
+            profileData.put("email", user.getEmail());
+            profileData.put("phone", user.getPhone());
+            profileData.put("userType", user.getUserType());
+            profileData.put("vehicleModel", user.getVehicleModel());
+            profileData.put("licensePlate", user.getLicensePlate());
+            profileData.put("vehicleCapacity", user.getVehicleCapacity());
+
+            return ResponseEntity.ok(profileData);
 
         } catch (Exception e) {
             e.printStackTrace();
@@ -65,45 +73,50 @@ public class UserController {
         }
     }
 
-    // ==================== GET HISTORY ====================
     @GetMapping("/history")
-    public ResponseEntity<?> getHistory(@RequestHeader("Authorization") String authHeader) {
+    public ResponseEntity<?> getUserHistory(@RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = resolveUser(token);
             if (userOpt.isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));
             }
 
             User user = userOpt.get();
-
             Map<String, Object> history = new HashMap<>();
-            history.put("postedRides", rideRepository.findByDriverId(user.getId()));
-            history.put("bookedRides", bookingRepository.findByUser(user));
+
+            // Get rides posted by the user (if they are a driver)
+            List<RideResponseDto> postedRides = rideRepository.findByDriver_Id(user.getId())
+                    .stream()
+                    .map(RideResponseDto::new)
+                    .collect(Collectors.toList());
+            history.put("postedRides", postedRides);
+
+            // Get bookings made by the user (if they are a passenger)
+            List<BookingResponseDto> bookedRides = bookingRepository.findByPassenger_Id(user.getId())
+                    .stream()
+                    .map(BookingResponseDto::new)
+                    .collect(Collectors.toList());
+            history.put("bookedRides", bookedRides);
 
             return ResponseEntity.ok(history);
-
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("message", "Failed to fetch history: " + e.getMessage()));
+            return ResponseEntity.ok(Map.of("postedRides", new ArrayList<>(), "bookedRides", new ArrayList<>()));
         }
     }
 
-    // ==================== UPDATE VEHICLE DETAILS ====================
     @PutMapping("/vehicle")
     public ResponseEntity<?> updateVehicle(@RequestBody Map<String, Object> request,
                                            @RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = resolveUser(token);
             if (userOpt.isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));
             }
 
@@ -116,51 +129,119 @@ public class UserController {
                 user.setLicensePlate((String) request.get("licensePlate"));
             }
             if (request.containsKey("vehicleCapacity")) {
-                Object capacity = request.get("vehicleCapacity");
-                if (capacity instanceof Integer) {
-                    user.setVehicleCapacity((Integer) capacity);
-                } else if (capacity instanceof Number) {
-                    user.setVehicleCapacity(((Number) capacity).intValue());
-                }
+                user.setVehicleCapacity((Integer) request.get("vehicleCapacity"));
             }
 
             userRepository.save(user);
 
-            return ResponseEntity.ok(Map.of("message", "Vehicle details saved successfully"));
-
+            return ResponseEntity.ok(Map.of("message", "Vehicle details updated successfully"));
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("message", "Failed to save vehicle details: " + e.getMessage()));
+                    .body(Map.of("message", "Failed to update vehicle: " + e.getMessage()));
         }
     }
 
-    // ==================== UPDATE USER TYPE ====================
-    @PostMapping("/update-user-type")
-    public ResponseEntity<?> updateUserType(@RequestBody Map<String, String> request,
-                                            @RequestHeader("Authorization") String authHeader) {
+    @GetMapping("/wallet/balance")
+    public ResponseEntity<?> getWalletBalance(@RequestHeader("Authorization") String authHeader) {
         try {
-            String userType = request.get("userType");
-
-            if (userType == null || (!userType.equals("driver") && !userType.equals("passenger"))) {
-                return ResponseEntity.badRequest().body(Map.of("message", "Invalid user type"));
-            }
-
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = resolveUser(token);
             if (userOpt.isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));
             }
 
             User user = userOpt.get();
+            Double balance = payoutService.getWalletBalance(user.getId());
+
+            return ResponseEntity.ok(Map.of(
+                    "balance", balance,
+                    "userId", user.getId()
+            ));
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Failed to fetch balance: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/wallet/transactions")
+    public ResponseEntity<?> getTransactionHistory(@RequestHeader("Authorization") String authHeader) {
+        try {
+            String token = authHeader.replace("Bearer ", "");
+
+            Optional<User> userOpt = resolveUser(token);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("message", "User not found"));
+            }
+
+            User user = userOpt.get();
+            List<Transaction> transactions = payoutService.getTransactionHistory(user.getId());
+
+            return ResponseEntity.ok(transactions);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Failed to fetch transactions: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/wallet/withdraw")
+    public ResponseEntity<?> withdrawFromWallet(@RequestBody Map<String, Object> request,
+                                                @RequestHeader("Authorization") String authHeader) {
+        try {
+            String token = authHeader.replace("Bearer ", "");
+
+            Optional<User> userOpt = resolveUser(token);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("message", "User not found"));
+            }
+
+            User user = userOpt.get();
+            Double amount = Double.valueOf(request.get("amount").toString());
+            String bankAccount = (String) request.get("bankAccount");
+            String ifsc = (String) request.get("ifsc");
+
+            Transaction transaction = payoutService.withdrawFromWallet(
+                    user.getId(), amount, bankAccount, ifsc);
+
+            return ResponseEntity.ok(Map.of(
+                    "message", "Withdrawal successful",
+                    "transaction", transaction
+            ));
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Failed to withdraw: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/update-user-type")
+    public ResponseEntity<?> updateUserType(@RequestBody Map<String, Object> request,
+                                            @RequestHeader("Authorization") String authHeader) {
+        try {
+            String token = authHeader.replace("Bearer ", "");
+
+            Optional<User> userOpt = resolveUser(token);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                        .body(Map.of("message", "User not found"));
+            }
+
+            User user = userOpt.get();
+            String userType = (String) request.get("userType");
             user.setUserType(userType);
+
             userRepository.save(user);
 
-            return ResponseEntity.ok(Map.of("message", "User type updated successfully", "userType", userType));
-
+            return ResponseEntity.ok(Map.of("message", "User type updated successfully"));
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)

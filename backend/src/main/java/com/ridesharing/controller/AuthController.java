@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 import java.util.*;
 
 @RestController
-@RequestMapping("/auth")
+@RequestMapping("/api/auth")
 @CrossOrigin(origins = "*")
 public class AuthController {
 
@@ -45,26 +45,29 @@ public class AuthController {
                 return ResponseEntity.badRequest().body(Map.of("message", "Name is required"));
             }
 
-            if (email == null || email.trim().isEmpty()) {
-                return ResponseEntity.badRequest().body(Map.of("message", "Email is required"));
-            }
-
             if (password == null || password.trim().isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of("message", "Password is required"));
             }
 
-            if (userRepository.findByEmail(email).isPresent()) {
+            // Check if either email or phone is provided
+            if ((email == null || email.trim().isEmpty()) && (phone == null || phone.trim().isEmpty())) {
+                return ResponseEntity.badRequest().body(Map.of("message", "Either email or phone is required"));
+            }
+
+            // Check email uniqueness only if email is provided
+            if (email != null && !email.trim().isEmpty() && userRepository.findByEmail(email).isPresent()) {
                 return ResponseEntity.badRequest().body(Map.of("message", "Email already registered"));
             }
 
+            // Check phone uniqueness only if phone is provided
             if (phone != null && !phone.trim().isEmpty() && userRepository.findByPhone(phone).isPresent()) {
                 return ResponseEntity.badRequest().body(Map.of("message", "Phone number already registered"));
             }
 
             User user = new User();
             user.setName(name);
-            user.setEmail(email);
-            user.setPhone(phone != null ? phone : "");
+            user.setEmail(email != null && !email.trim().isEmpty() ? email : null);  // Set null if empty
+            user.setPhone(phone != null && !phone.trim().isEmpty() ? phone : null);  // Set null if empty
             user.setPassword(passwordEncoder.encode(password));
             user.setVerified(false);
             user.setVerificationCode(String.format("%06d", random.nextInt(1000000)));
@@ -75,13 +78,21 @@ public class AuthController {
 
             userRepository.save(user);
 
-            // Send actual email
-            emailService.sendOtpEmail(email, user.getVerificationCode(), "register");
+            // Send OTP email only if email is provided
+            if (user.getEmail() != null) {
+                emailService.sendOtpEmail(email, user.getVerificationCode(), "register");
+            }
 
             Map<String, Object> response = new HashMap<>();
             response.put("message", "Registration successful. Please verify your email.");
-            response.put("email", email);
-            response.put("requiresVerification", true);
+            if (user.getEmail() != null) {
+                response.put("email", email);
+                response.put("requiresVerification", true);
+            } else {
+                // If phone registration, auto-verify or handle differently
+                response.put("message", "Registration successful");
+                response.put("token", jwtUtil.generateToken(phone));
+            }
 
             return ResponseEntity.ok(response);
 
@@ -131,13 +142,15 @@ public class AuthController {
 
             Map<String, Object> response = new HashMap<>();
             response.put("token", token);
+            response.put("id", user.getId());
             response.put("message", "Registration successful and verified!");
-            response.put("email", user.getEmail());
+            response.put("email", user.getEmail() != null ? user.getEmail() : "");
             response.put("name", user.getName());
-            response.put("phone", user.getPhone());
+            response.put("phone", user.getPhone() != null ? user.getPhone() : "");
             response.put("vehicleModel", user.getVehicleModel());
             response.put("licensePlate", user.getLicensePlate());
             response.put("vehicleCapacity", user.getVehicleCapacity());
+            response.put("userType", user.getUserType() != null ? user.getUserType() : "passenger");
 
             return ResponseEntity.ok(response);
 
@@ -213,17 +226,21 @@ public class AuthController {
                         .body(Map.of("message", "Invalid credentials"));
             }
 
-            String token = jwtUtil.generateToken(user.getEmail());
+            // Use email if available, otherwise phone for token subject
+            String tokenSubject = user.getEmail() != null ? user.getEmail() : user.getPhone();
+            String token = jwtUtil.generateToken(tokenSubject);
 
             Map<String, Object> response = new HashMap<>();
             response.put("token", token);
+            response.put("id", user.getId());
             response.put("message", "Login successful");
-            response.put("email", user.getEmail());
+            response.put("email", user.getEmail() != null ? user.getEmail() : "");
             response.put("name", user.getName());
-            response.put("phone", user.getPhone());
+            response.put("phone", user.getPhone() != null ? user.getPhone() : "");
             response.put("vehicleModel", user.getVehicleModel());
             response.put("licensePlate", user.getLicensePlate());
             response.put("vehicleCapacity", user.getVehicleCapacity());
+            response.put("userType", user.getUserType() != null ? user.getUserType() : "passenger");
 
             return ResponseEntity.ok(response);
 
@@ -442,9 +459,12 @@ public class AuthController {
 
             // Extract email from JWT token
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
+            String subject = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = userRepository.findByEmail(subject);
+            if (userOpt.isEmpty()) {
+                userOpt = userRepository.findByPhone(subject);
+            }
             if (userOpt.isEmpty()) {
                 return ResponseEntity.badRequest().body(Map.of("message", "User not found"));
             }

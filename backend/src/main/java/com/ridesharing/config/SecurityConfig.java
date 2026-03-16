@@ -30,12 +30,18 @@ public class SecurityConfig {
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(auth -> auth
+                        // ✅ Public endpoints
+                        .requestMatchers("/api/auth/**").permitAll()
                         .requestMatchers("/auth/**").permitAll()
-                        .requestMatchers("/rides/**").permitAll()
-                        .requestMatchers("/user/**").permitAll()
-                        .requestMatchers("/bookings/**").permitAll()
-                        .requestMatchers("/profile/**").permitAll()
-                        .anyRequest().permitAll()
+                        .requestMatchers("/ws/**").permitAll()
+                        .requestMatchers("/api/rides/**").permitAll()
+                        .requestMatchers("/api/user/**").permitAll()
+                        .requestMatchers("/api/bookings/**").permitAll()
+                        .requestMatchers("/api/payments/**").permitAll()
+                        .requestMatchers("/error").permitAll()
+
+                        // ✅ All other requests require authentication
+                        .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
 
@@ -45,7 +51,12 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(Arrays.asList("http://localhost:3000"));
+        configuration.setAllowedOriginPatterns(Arrays.asList(
+                "http://localhost:3000",
+                "http://localhost:5173",
+                "http://127.0.0.1:3000",
+                "http://127.0.0.1:5173"
+        ));
         configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         configuration.setAllowedHeaders(Arrays.asList("*"));
         configuration.setAllowCredentials(true);

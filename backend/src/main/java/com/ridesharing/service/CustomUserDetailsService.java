@@ -17,12 +17,15 @@ public class CustomUserDetailsService implements UserDetailsService {
     private UserRepository userRepository;
 
     @Override
-    public UserDetails loadUserByUsername(String email) throws UsernameNotFoundException {
-        com.ridesharing.entity.User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new UsernameNotFoundException("User not found with email: " + email));
+    public UserDetails loadUserByUsername(String emailOrPhone) throws UsernameNotFoundException {
+        com.ridesharing.entity.User user = userRepository.findByEmail(emailOrPhone)
+                .or(() -> userRepository.findByPhone(emailOrPhone))
+                .orElseThrow(() -> new UsernameNotFoundException("User not found: " + emailOrPhone));
+
+        String principal = user.getEmail() != null ? user.getEmail() : user.getPhone();
 
         return new User(
-                user.getEmail(),
+                principal,
                 user.getPassword(),
                 Collections.emptyList()
         );

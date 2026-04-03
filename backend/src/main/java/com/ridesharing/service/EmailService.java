@@ -51,6 +51,20 @@ public class EmailService {
             System.out.println("❌ Failed to send email: " + e.getMessage());
         }
     }
+    public void sendEmail(String toEmail, String subject, String body) {
+        try {
+            SimpleMailMessage message = new SimpleMailMessage();
+            message.setFrom(fromEmail);
+            message.setTo(toEmail);
+            message.setSubject(subject);
+            message.setText(body);
+            mailSender.send(message);
+            System.out.println("✅ Email sent successfully to: " + toEmail);
+        } catch (Exception e) {
+            System.out.println("❌ Failed to send email: " + e.getMessage());
+        }
+    }
+
     public void sendRideRescheduledNotification(Booking booking, LocalDateTime oldDateTime, LocalDateTime newDateTime) {
         try {
             SimpleMailMessage message = new SimpleMailMessage();

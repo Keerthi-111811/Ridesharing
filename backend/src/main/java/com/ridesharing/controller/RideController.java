@@ -12,6 +12,7 @@ import com.ridesharing.repository.UserRepository;
 import com.ridesharing.service.EmailService;
 import com.ridesharing.service.FirebaseService;
 import com.ridesharing.service.OSRMFareService;
+import com.ridesharing.service.PayoutService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -46,6 +47,12 @@ public class RideController {
 
     @Autowired
     private EmailService emailService;
+
+    @Autowired
+    private PayoutService payoutService;
+
+    @Autowired
+    private RouteMatchingService routeMatchingService;
 
     @GetMapping
     public ResponseEntity<?> getRides(
@@ -205,6 +212,12 @@ public class RideController {
             }
 
             User driver = userOpt.get();
+
+            // Blocked users cannot post rides
+            if ("blocked".equals(driver.getUserType())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("message", "Your account has been blocked. Please contact support."));
+            }
 
             Ride ride = new Ride();
             ride.setSource((String) request.get("source"));
@@ -370,6 +383,9 @@ public class RideController {
                     Map<String, Object> notification = new HashMap<>();
                     notification.put("type", "RIDE_RESCHEDULED");
                     notification.put("rideId", ride.getId());
+                    notification.put("bookingId", booking.getId());
+                    notification.put("source", ride.getSource());
+                    notification.put("destination", ride.getDestination());
                     notification.put("oldDateTime", oldDateTime.toString());
                     notification.put("newDateTime", ride.getDateTime().toString());
 
@@ -454,8 +470,6 @@ public class RideController {
                     .body(Map.of("message", "Failed to update ride: " + e.getMessage()));
         }
     }
-    @Autowired
-    private RouteMatchingService routeMatchingService;
 
     @GetMapping("/smart-search")
     public ResponseEntity<?> smartSearch(
@@ -467,20 +481,78 @@ public class RideController {
         try {
             List<Ride> matches = routeMatchingService.findSmartMatches(source, destination, seats);
 
-            List<RideResponseDto> rideDtos = matches.stream()
-                    .map(RideResponseDto::new)
-                    .collect(Collectors.toList());
-
-            Map<String, Object> response = new HashMap<>();
-            response.put("directMatches", rideDtos.stream()
+            // Separate direct vs partial matches
+            List<Ride> directRides = matches.stream()
                     .filter(r -> r.getSource().equalsIgnoreCase(source) &&
                             r.getDestination().equalsIgnoreCase(destination))
-                    .collect(Collectors.toList()));
-            response.put("partialMatches", rideDtos.stream()
+                    .collect(Collectors.toList());
+
+            List<Ride> partialRides = matches.stream()
                     .filter(r -> !r.getSource().equalsIgnoreCase(source) ||
                             !r.getDestination().equalsIgnoreCase(destination))
-                    .collect(Collectors.toList()));
-            response.put("totalCount", rideDtos.size());
+                    .collect(Collectors.toList());
+
+            // For partial matches, calculate passenger's segment fare using distance ratio
+            // passengerFare = (passengerSegmentDistance / driverTotalDistance) * driverPricePerSeat
+            double[] passengerSrcCoords = osrmService.getCoordinates(source);
+            double[] passengerDstCoords = osrmService.getCoordinates(destination);
+
+            double passengerSegmentDistance = 0;
+            if (passengerSrcCoords != null && passengerDstCoords != null) {
+                try {
+                    passengerSegmentDistance = osrmService.getDistanceInKm(
+                            String.valueOf(passengerSrcCoords[0]), String.valueOf(passengerSrcCoords[1]),
+                            String.valueOf(passengerDstCoords[0]), String.valueOf(passengerDstCoords[1])
+                    );
+                } catch (Exception ignored) {}
+            }
+
+            final double passengerDist = passengerSegmentDistance;
+
+            List<Map<String, Object>> partialMatchesWithFare = new ArrayList<>();
+            for (Ride ride : partialRides) {
+                Map<String, Object> rideMap = new HashMap<>();
+                RideResponseDto dto = new RideResponseDto(ride);
+                rideMap.put("id", dto.getId());
+                rideMap.put("source", dto.getSource());
+                rideMap.put("destination", dto.getDestination());
+                rideMap.put("dateTime", dto.getDateTime());
+                rideMap.put("availableSeats", dto.getAvailableSeats());
+                rideMap.put("vehicleModel", dto.getVehicleModel());
+                rideMap.put("licensePlate", dto.getLicensePlate());
+                rideMap.put("driverName", dto.getDriverName());
+                rideMap.put("driverRating", dto.getDriverRating());
+                rideMap.put("matchScore", dto.getMatchScore());
+                rideMap.put("isPartialMatch", true);
+                rideMap.put("passengerSource", source);
+                rideMap.put("passengerDestination", destination);
+
+                // Calculate partial fare: proportion of passenger's segment vs driver's full route
+                double partialFare = ride.getPricePerSeat(); // fallback
+                if (passengerDist > 0 && ride.getPricePerSeat() != null && ride.getPricePerSeat() > 0) {
+                    try {
+                        double[] rideSrcCoords = osrmService.getCoordinates(ride.getSource());
+                        double[] rideDstCoords = osrmService.getCoordinates(ride.getDestination());
+                        if (rideSrcCoords != null && rideDstCoords != null) {
+                            double driverTotalDist = osrmService.getDistanceInKm(
+                                    String.valueOf(rideSrcCoords[0]), String.valueOf(rideSrcCoords[1]),
+                                    String.valueOf(rideDstCoords[0]), String.valueOf(rideDstCoords[1])
+                            );
+                            if (driverTotalDist > 0) {
+                                double ratio = Math.min(1.0, passengerDist / driverTotalDist);
+                                partialFare = Math.round(ratio * ride.getPricePerSeat() * 100.0) / 100.0;
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+                rideMap.put("pricePerSeat", partialFare);
+                partialMatchesWithFare.add(rideMap);
+            }
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("directMatches", directRides.stream().map(RideResponseDto::new).collect(Collectors.toList()));
+            response.put("partialMatches", partialMatchesWithFare);
+            response.put("totalCount", matches.size());
 
             return ResponseEntity.ok(response);
 
@@ -490,6 +562,18 @@ public class RideController {
                     .body(Map.of("message", "Failed to search rides: " + e.getMessage()));
         }
     }
+    @GetMapping("/test-firebase")
+public ResponseEntity<?> testFirebase(@RequestParam String userId) {
+    Map<String, Object> testNotif = new HashMap<>();
+    testNotif.put("type", "TEST");
+    testNotif.put("message", "Test from backend");
+    testNotif.put("createdAt", System.currentTimeMillis());
+    testNotif.put("read", false);
+
+    firebaseService.sendNotificationToUser(userId, testNotif);
+    
+    return ResponseEntity.ok(Map.of("message", "Test notification sent to user " + userId));
+}
 
     @DeleteMapping("/{id}")
     public ResponseEntity<?> deleteRide(@PathVariable Long id,
@@ -508,6 +592,45 @@ public class RideController {
             if (userOpt.isEmpty() || !ride.getDriver().getId().equals(userOpt.get().getId())) {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN)
                         .body(Map.of("message", "You don't have permission to delete this ride"));
+            }
+
+            // Refund all paid passengers and notify them
+            List<Booking> bookings = bookingRepository.findByRide_Id(id);
+            for (Booking booking : bookings) {
+                boolean isPaid = "payment_completed".equals(booking.getStatus())
+                        || "confirmed".equals(booking.getStatus());
+
+                // Cancel the booking
+                booking.setStatus("cancelled");
+                booking.setCancelledAt(java.time.LocalDateTime.now());
+                booking.setCancelReason("Driver cancelled the ride");
+                bookingRepository.save(booking);
+
+                // Refund to passenger wallet if they paid
+                if (isPaid && booking.getTotalFare() != null && booking.getTotalFare() > 0) {
+                    try {
+                        payoutService.refundToPassengerWallet(booking);
+                    } catch (Exception ex) {
+                        System.err.println("⚠️ Refund failed for booking " + booking.getId() + ": " + ex.getMessage());
+                    }
+                }
+
+                // Send Firebase notification to passenger
+                Map<String, Object> notification = new HashMap<>();
+                notification.put("type", "BOOKING_CANCELLED");
+                notification.put("bookingId", booking.getId());
+                notification.put("reason", "Driver cancelled the ride");
+                notification.put("refunded", isPaid);
+                notification.put("refundAmount", isPaid ? booking.getTotalFare() : 0);
+                firebaseService.sendNotificationToUser(
+                        String.valueOf(booking.getPassenger().getId()),
+                        notification
+                );
+
+                // Send email to passenger
+                emailService.sendRideCancelledToPassenger(booking,
+                        isPaid ? "Driver cancelled the ride. Your payment of ₹" + booking.getTotalFare() + " has been refunded to your wallet."
+                               : "Driver cancelled the ride");
             }
 
             rideRepository.delete(ride);

@@ -31,9 +31,8 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     FilterChain filterChain) throws ServletException, IOException {
         String requestURI = request.getRequestURI();
 
-        // ✅ Skip JWT filter for WebSocket and auth endpoints
-        if (requestURI.contains("/ws") ||
-                requestURI.contains("/api/auth/login") ||
+        // Skip JWT filter for auth endpoints
+        if (requestURI.contains("/api/auth/login") ||
                 requestURI.contains("/api/auth/register") ||
                 requestURI.contains("/api/auth/send-otp") ||
                 requestURI.contains("/api/auth/verify-otp") ||
@@ -47,19 +46,27 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         String token = getTokenFromRequest(request);
 
-        if (StringUtils.hasText(token) && jwtUtil.isTokenValid(token, jwtUtil.extractUsername(token))) {
-            String username = jwtUtil.extractUsername(token);
-            // ✅ FIX: Use explicit type instead of 'var'
-            UserDetails userDetails = userService.loadUserByUsername(username);
+        try {
+            if (StringUtils.hasText(token) && jwtUtil.isTokenValid(token, jwtUtil.extractUsername(token))) {
+                String username = jwtUtil.extractUsername(token);
+                UserDetails userDetails = userService.loadUserByUsername(username);
 
-            UsernamePasswordAuthenticationToken authentication =
-                    new UsernamePasswordAuthenticationToken(
-                            userDetails,
-                            null,
-                            userDetails.getAuthorities()
-                    );
-            authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-            SecurityContextHolder.getContext().setAuthentication(authentication);
+                UsernamePasswordAuthenticationToken authentication =
+                        new UsernamePasswordAuthenticationToken(
+                                userDetails,
+                                null,
+                                userDetails.getAuthorities()
+                        );
+                authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authentication);
+            }
+        } catch (io.jsonwebtoken.ExpiredJwtException e) {
+            response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+            response.setContentType("application/json");
+            response.getWriter().write("{\"message\":\"Token expired. Please log in again.\",\"error\":\"TOKEN_EXPIRED\"}");
+            return;
+        } catch (Exception e) {
+            // Invalid token — just continue without authentication
         }
 
         filterChain.doFilter(request, response);

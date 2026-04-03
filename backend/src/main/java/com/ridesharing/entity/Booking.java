@@ -50,6 +50,10 @@ public class Booking {
     private String signature;
     private LocalDateTime paymentDate;
 
+    // Partial match — passenger's actual pickup/dropoff (may differ from ride source/destination)
+    private String passengerSource;
+    private String passengerDestination;
+
     // Getters and Setters
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
@@ -112,4 +116,10 @@ public class Booking {
 
     public LocalDateTime getPaymentDate() { return paymentDate; }
     public void setPaymentDate(LocalDateTime paymentDate) { this.paymentDate = paymentDate; }
+
+    public String getPassengerSource() { return passengerSource; }
+    public void setPassengerSource(String passengerSource) { this.passengerSource = passengerSource; }
+
+    public String getPassengerDestination() { return passengerDestination; }
+    public void setPassengerDestination(String passengerDestination) { this.passengerDestination = passengerDestination; }
 }

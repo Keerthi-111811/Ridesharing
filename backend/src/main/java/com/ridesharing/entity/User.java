@@ -168,6 +168,61 @@ public class User {
     @Column(name = "user_type")
     private String userType = "passenger"; // Default to passenger
 
+    // ===== Driver Verification Fields =====
+    @Column(name = "driver_verification_status")
+    private String driverVerificationStatus; // null / "pending" / "approved" / "rejected"
+
+    @Column(name = "driver_license_number")
+    private String driverLicenseNumber;
+
+    @Column(name = "driver_license_expiry")
+    private String driverLicenseExpiry; // stored as string "YYYY-MM-DD"
+
+    @Column(name = "vehicle_registration_number")
+    private String vehicleRegistrationNumber;
+
+    @Column(name = "vehicle_insurance_expiry")
+    private String vehicleInsuranceExpiry; // stored as string "YYYY-MM-DD"
+
+    @Column(name = "admin_notes")
+    private String adminNotes;
+
+    @Column(name = "verification_submitted_at")
+    private LocalDateTime verificationSubmittedAt;
+
+    // Document uploads (stored as base64 data URLs — use LONGTEXT for large files)
+    @Column(name = "doc_license_url", columnDefinition = "LONGTEXT")
+    private String docLicenseUrl;
+
+    @Column(name = "doc_vehicle_url", columnDefinition = "LONGTEXT")
+    private String docVehicleUrl;
+
+    public String getDocLicenseUrl() { return docLicenseUrl; }
+    public void setDocLicenseUrl(String s) { this.docLicenseUrl = s; }
+    public String getDocVehicleUrl() { return docVehicleUrl; }
+    public void setDocVehicleUrl(String s) { this.docVehicleUrl = s; }
+
+    public String getDriverVerificationStatus() { return driverVerificationStatus; }
+    public void setDriverVerificationStatus(String s) { this.driverVerificationStatus = s; }
+
+    public String getDriverLicenseNumber() { return driverLicenseNumber; }
+    public void setDriverLicenseNumber(String s) { this.driverLicenseNumber = s; }
+
+    public String getDriverLicenseExpiry() { return driverLicenseExpiry; }
+    public void setDriverLicenseExpiry(String s) { this.driverLicenseExpiry = s; }
+
+    public String getVehicleRegistrationNumber() { return vehicleRegistrationNumber; }
+    public void setVehicleRegistrationNumber(String s) { this.vehicleRegistrationNumber = s; }
+
+    public String getVehicleInsuranceExpiry() { return vehicleInsuranceExpiry; }
+    public void setVehicleInsuranceExpiry(String s) { this.vehicleInsuranceExpiry = s; }
+
+    public String getAdminNotes() { return adminNotes; }
+    public void setAdminNotes(String s) { this.adminNotes = s; }
+
+    public LocalDateTime getVerificationSubmittedAt() { return verificationSubmittedAt; }
+    public void setVerificationSubmittedAt(LocalDateTime t) { this.verificationSubmittedAt = t; }
+
     public String getUserType() {
         return userType;
     }

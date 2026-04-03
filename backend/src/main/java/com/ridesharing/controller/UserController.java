@@ -63,6 +63,13 @@ public class UserController {
             profileData.put("vehicleModel", user.getVehicleModel());
             profileData.put("licensePlate", user.getLicensePlate());
             profileData.put("vehicleCapacity", user.getVehicleCapacity());
+            profileData.put("driverVerificationStatus", user.getDriverVerificationStatus());
+            profileData.put("driverLicenseNumber", user.getDriverLicenseNumber());
+            profileData.put("driverLicenseExpiry", user.getDriverLicenseExpiry());
+            profileData.put("vehicleRegistrationNumber", user.getVehicleRegistrationNumber());
+            profileData.put("vehicleInsuranceExpiry", user.getVehicleInsuranceExpiry());
+            profileData.put("docLicenseUrl", user.getDocLicenseUrl());
+            profileData.put("docVehicleUrl", user.getDocVehicleUrl());
 
             return ResponseEntity.ok(profileData);
 
@@ -223,6 +230,33 @@ public class UserController {
         }
     }
 
+    @PostMapping("/submit-driver-verification")
+    public ResponseEntity<?> submitDriverVerification(@RequestBody Map<String, Object> request,
+                                                      @RequestHeader("Authorization") String authHeader) {
+        try {
+            String token = authHeader.replace("Bearer ", "");
+            Optional<User> userOpt = resolveUser(token);
+            if (userOpt.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of("message", "User not found"));
+            }
+            User user = userOpt.get();
+            user.setDriverLicenseNumber((String) request.get("driverLicenseNumber"));
+            user.setDriverLicenseExpiry((String) request.get("driverLicenseExpiry"));
+            user.setVehicleRegistrationNumber((String) request.get("vehicleRegistrationNumber"));
+            user.setVehicleInsuranceExpiry((String) request.get("vehicleInsuranceExpiry"));
+            if (request.get("docLicenseUrl") != null) user.setDocLicenseUrl((String) request.get("docLicenseUrl"));
+            if (request.get("docVehicleUrl") != null) user.setDocVehicleUrl((String) request.get("docVehicleUrl"));
+            user.setDriverVerificationStatus("pending");
+            user.setVerificationSubmittedAt(java.time.LocalDateTime.now());
+            userRepository.save(user);
+            return ResponseEntity.ok(Map.of("message", "Verification submitted successfully. Awaiting admin review."));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("message", "Failed to submit verification: " + e.getMessage()));
+        }
+    }
+
     @PostMapping("/update-user-type")
     public ResponseEntity<?> updateUserType(@RequestBody Map<String, Object> request,
                                             @RequestHeader("Authorization") String authHeader) {
@@ -236,9 +270,14 @@ public class UserController {
             }
 
             User user = userOpt.get();
+
+            // Never overwrite admin role
+            if ("admin".equals(user.getUserType())) {
+                return ResponseEntity.ok(Map.of("message", "Admin role preserved", "userType", "admin"));
+            }
+
             String userType = (String) request.get("userType");
             user.setUserType(userType);
-
             userRepository.save(user);
 
             return ResponseEntity.ok(Map.of("message", "User type updated successfully"));

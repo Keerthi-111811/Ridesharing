@@ -15,7 +15,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import com.ridesharing.repository.PaymentRepository;
-import com.ridesharing.entity.Transaction;
 import com.ridesharing.service.PayoutService;
 
 import java.time.LocalDateTime;
@@ -73,8 +72,21 @@ public class BookingController {
             }
 
             User passenger = userOpt.get();
+
+            // Blocked users cannot book rides
+            if ("blocked".equals(passenger.getUserType())) {
+                return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                        .body(Map.of("message", "Your account has been blocked. Please contact support."));
+            }
+
             Long rideId = Long.valueOf(request.get("rideId").toString());
             Integer seatsBooked = Integer.valueOf(request.get("seatsBooked").toString());
+            boolean requirePayment = request.containsKey("requirePayment") && Boolean.TRUE.equals(request.get("requirePayment"));
+            // Support partial-route fare override
+            Double totalFareOverride = null;
+            if (request.containsKey("totalAmount") && request.get("totalAmount") != null) {
+                totalFareOverride = Double.valueOf(request.get("totalAmount").toString());
+            }
 
             Optional<Ride> rideOpt = rideRepository.findById(rideId);
             if (rideOpt.isEmpty()) {
@@ -94,15 +106,27 @@ public class BookingController {
                         .body(Map.of("message", "Not enough seats available"));
             }
 
-            // Create booking with PAYMENT_COMPLETED status but still pending driver approval
+            // Create booking with PENDING status - will be updated to payment_completed after payment
             Booking booking = new Booking();
             booking.setRide(ride);
             booking.setPassenger(passenger);
             booking.setDriver(ride.getDriver());
             booking.setSeatsBooked(seatsBooked);
-            booking.setTotalFare(ride.getPricePerSeat() * seatsBooked);
-            booking.setStatus("payment_completed"); // Payment done, waiting for driver
+            // Use partial-route fare if provided, otherwise use ride's price per seat
+            double totalFare = (totalFareOverride != null && totalFareOverride > 0)
+                    ? totalFareOverride
+                    : ride.getPricePerSeat() * seatsBooked;
+            booking.setTotalFare(totalFare);
+            booking.setStatus("pending");
             booking.setBookedAt(LocalDateTime.now());
+
+            // Save passenger's actual pickup/dropoff for partial match bookings
+            if (request.containsKey("passengerSource") && request.get("passengerSource") != null) {
+                booking.setPassengerSource((String) request.get("passengerSource"));
+            }
+            if (request.containsKey("passengerDestination") && request.get("passengerDestination") != null) {
+                booking.setPassengerDestination((String) request.get("passengerDestination"));
+            }
 
             Booking savedBooking = bookingRepository.save(booking);
 
@@ -110,8 +134,9 @@ public class BookingController {
             ride.setAvailableSeats(ride.getAvailableSeats() - seatsBooked);
             rideRepository.save(ride);
 
-            // Send notification to driver via Firebase
+            // Always notify driver of new booking request
             Map<String, Object> notificationData = new HashMap<>();
+            notificationData.put("type", "booking_request");
             notificationData.put("bookingId", savedBooking.getId());
             notificationData.put("passengerName", passenger.getName());
             notificationData.put("passengerEmail", passenger.getEmail());
@@ -119,44 +144,45 @@ public class BookingController {
             notificationData.put("source", ride.getSource());
             notificationData.put("destination", ride.getDestination());
             notificationData.put("seats", seatsBooked);
-            notificationData.put("totalFare", booking.getTotalFare());
+            notificationData.put("totalFare", totalFare);
             notificationData.put("rideId", ride.getId());
             notificationData.put("dateTime", ride.getDateTime().toString());
-            notificationData.put("paymentStatus", "COMPLETED");
+            notificationData.put("paymentStatus", requirePayment ? "PENDING_PAYMENT" : "NONE");
+            notificationData.put("timestamp", System.currentTimeMillis());
 
-            firebaseService.sendBookingRequestToDriver(
-                    String.valueOf(ride.getDriver().getId()),
-                    notificationData
-            );
+            if (!requirePayment) {
+                // Direct booking — notify driver immediately
+                System.out.println("🚀 Sending booking_request to driverId=" + ride.getDriver().getId() + " bookingId=" + savedBooking.getId());
+                firebaseService.sendNotificationToUser(String.valueOf(ride.getDriver().getId()), notificationData);
 
-            // Send email to driver
-            String driverEmail = ride.getDriver().getEmail();
-            String subject = "💰 Paid Booking Request - RideSync";
-            String body = String.format(
-                    "Hello %s,\n\n" +
-                            "You have received a PAID booking request!\n\n" +
-                            "📋 Booking Details:\n" +
-                            "------------------------\n" +
-                            "Passenger: %s\n" +
-                            "From: %s\n" +
-                            "To: %s\n" +
-                            "Date & Time: %s\n" +
-                            "Seats: %d\n" +
-                            "Total Fare: ₹%.2f\n" +
-                            "Payment Status: COMPLETED\n\n" +
-                            "Please login to ACCEPT or REJECT this booking.\n\n" +
-                            "If you reject, the passenger will get a full refund.\n\n" +
-                            "Thank you,\n" +
-                            "RideSync Team",
-                    ride.getDriver().getName(),
-                    passenger.getName(),
-                    ride.getSource(),
-                    ride.getDestination(),
-                    ride.getDateTime().format(DateTimeFormatter.ofPattern("dd/MM/yyyy hh:mm a")),
-                    seatsBooked,
-                    booking.getTotalFare()
-            );
-            emailService.sendOtpEmail(driverEmail, "Paid Booking Request", subject + "\n\n" + body);
+                // Notify passenger their booking is placed
+                Map<String, Object> passengerNotif = new HashMap<>();
+                passengerNotif.put("type", "BOOKING_CONFIRMED");
+                passengerNotif.put("bookingId", savedBooking.getId());
+                passengerNotif.put("driverName", ride.getDriver().getName());
+                passengerNotif.put("source", ride.getSource());
+                passengerNotif.put("destination", ride.getDestination());
+                passengerNotif.put("seats", seatsBooked);
+                passengerNotif.put("totalFare", totalFare);
+                passengerNotif.put("dateTime", ride.getDateTime().toString());
+                System.out.println("🚀 Sending BOOKING_CONFIRMED to passengerId=" + passenger.getId());
+                firebaseService.sendNotificationToUser(String.valueOf(passenger.getId()), passengerNotif);
+
+                // Send email to driver
+                String driverSubject = "🚗 New Booking Request - RideSync";
+                String driverBody = String.format(
+                        "Hello %s,\n\nYou have a new booking request!\n\n" +
+                        "Passenger: %s\nFrom: %s\nTo: %s\nDate: %s\nSeats: %d\nFare: ₹%.2f\n\n" +
+                        "Please login to ACCEPT or REJECT.\n\nRideSync Team",
+                        ride.getDriver().getName(), passenger.getName(),
+                        ride.getSource(), ride.getDestination(),
+                        ride.getDateTime().format(DateTimeFormatter.ofPattern("dd/MM/yyyy hh:mm a")),
+                        seatsBooked, totalFare);
+                emailService.sendEmail(ride.getDriver().getEmail(), driverSubject, driverBody);
+            } else {
+                // Pay-now flow — driver and passenger are notified only after payment is verified
+                System.out.println("💳 Pay-now booking created (pending payment) bookingId=" + savedBooking.getId() + " — notifications deferred until payment verified");
+            }
 
             Map<String, Object> response = new HashMap<>();
             response.put("message", "Booking created successfully. Waiting for driver approval.");
@@ -172,6 +198,7 @@ public class BookingController {
                     .body(Map.of("message", "Failed to create booking: " + e.getMessage()));
         }
     }
+
     @PutMapping("/{id}/start")
     public ResponseEntity<?> startRide(@PathVariable Long id,
                                        @RequestHeader("Authorization") String authHeader) {
@@ -213,7 +240,11 @@ public class BookingController {
             Map<String, Object> notification = new HashMap<>();
             notification.put("type", "RIDE_STARTED");
             notification.put("bookingId", booking.getId());
-            notification.put("message", "Your ride has started");
+            notification.put("rideId", booking.getRide().getId());
+            notification.put("source", booking.getRide().getSource());
+            notification.put("destination", booking.getRide().getDestination());
+            notification.put("driverName", booking.getDriver().getName());
+            notification.put("driverPhone", booking.getDriver().getPhone());
 
             firebaseService.sendNotificationToUser(
                     String.valueOf(booking.getPassenger().getId()),
@@ -279,7 +310,11 @@ public class BookingController {
             Map<String, Object> notification = new HashMap<>();
             notification.put("type", "RIDE_COMPLETED");
             notification.put("bookingId", booking.getId());
-            notification.put("message", "Your ride has been completed");
+            notification.put("rideId", booking.getRide().getId());
+            notification.put("source", booking.getRide().getSource());
+            notification.put("destination", booking.getRide().getDestination());
+            notification.put("totalFare", booking.getTotalFare());
+            notification.put("driverName", booking.getDriver().getName());
 
             firebaseService.sendNotificationToUser(
                     String.valueOf(booking.getPassenger().getId()),
@@ -376,9 +411,9 @@ public class BookingController {
                         .body(Map.of("message", "Only the driver can accept this booking"));
             }
 
-            if (!"payment_completed".equals(booking.getStatus())) {
+            if (!"payment_completed".equals(booking.getStatus()) && !"pending".equals(booking.getStatus())) {
                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                        .body(Map.of("message", "Booking payment not completed"));
+                        .body(Map.of("message", "Booking cannot be accepted in its current state"));
             }
 
             booking.setStatus("confirmed");
@@ -399,6 +434,7 @@ public class BookingController {
             passengerNotification.put("destination", booking.getRide().getDestination());
             passengerNotification.put("dateTime", booking.getRide().getDateTime().toString());
 
+            System.out.println("🚀 Sending BOOKING_ACCEPTED to passengerId=" + booking.getPassenger().getId());
             firebaseService.sendBookingUpdateToPassenger(
                     String.valueOf(booking.getPassenger().getId()),
                     passengerNotification
@@ -437,7 +473,7 @@ public class BookingController {
                     driver.getVehicleModel(),
                     driver.getLicensePlate()
             );
-            emailService.sendOtpEmail(passengerEmail, "Booking Confirmed", subject + "\n\n" + body);
+            emailService.sendEmail(passengerEmail, subject, body);
 
             return ResponseEntity.ok(Map.of(
                     "message", "Booking confirmed successfully",
@@ -481,8 +517,15 @@ public class BookingController {
 
             String reason = request.getOrDefault("reason", "Driver rejected the booking");
 
-            // Process refund (you'll need to implement this with Razorpay)
-            // processRefund(booking.getPaymentId(), booking.getTotalFare());
+            // Only refund if payment was actually made (payment_completed status)
+            boolean wasPaymentMade = "payment_completed".equals(booking.getStatus());
+            if (wasPaymentMade && booking.getTotalFare() != null && booking.getTotalFare() > 0) {
+                try {
+                    payoutService.refundToPassengerWallet(booking);
+                } catch (Exception ex) {
+                    System.err.println("⚠️ Refund failed for booking " + booking.getId() + ": " + ex.getMessage());
+                }
+            }
 
             booking.setStatus("refunded");
             booking.setRejectReason(reason);
@@ -501,15 +544,20 @@ public class BookingController {
             passengerNotification.put("bookingId", booking.getId());
             passengerNotification.put("reason", reason);
             passengerNotification.put("amount", booking.getTotalFare());
+            passengerNotification.put("refunded", wasPaymentMade);
 
             firebaseService.sendBookingUpdateToPassenger(
                     String.valueOf(booking.getPassenger().getId()),
                     passengerNotification
             );
+            System.out.println("🔔 REJECT: Sent BOOKING_REJECTED to passengerId=" + booking.getPassenger().getId() + " bookingId=" + booking.getId());
 
-            // Send email to passenger about refund
+            // Send email to passenger
             String passengerEmail = booking.getPassenger().getEmail();
-            String subject = "❌ Booking Rejected - Refund Initiated";
+            String subject = "❌ Booking Rejected - RideSync";
+            String refundLine = wasPaymentMade
+                    ? String.format("The refund of ₹%.2f has been added to your RideSync wallet.\n\n", booking.getTotalFare())
+                    : "No payment was charged for this booking.\n\n";
             String body = String.format(
                     "Hello %s,\n\n" +
                             "Your booking has been REJECTED by the driver.\n\n" +
@@ -518,19 +566,18 @@ public class BookingController {
                             "From: %s\n" +
                             "To: %s\n" +
                             "Date & Time: %s\n" +
-                            "Amount Refunded: ₹%.2f\n" +
                             "Reason: %s\n\n" +
-                            "The refund will be processed to your original payment method within 5-7 business days.\n\n" +
+                            "%s" +
                             "Thank you,\n" +
                             "RideSync Team",
                     booking.getPassenger().getName(),
                     ride.getSource(),
                     ride.getDestination(),
                     ride.getDateTime().format(DateTimeFormatter.ofPattern("dd/MM/yyyy hh:mm a")),
-                    booking.getTotalFare(),
-                    reason
+                    reason,
+                    refundLine
             );
-            emailService.sendOtpEmail(passengerEmail, "Booking Rejected - Refund", subject + "\n\n" + body);
+            emailService.sendEmail(passengerEmail, subject, body);
 
             return ResponseEntity.ok(Map.of(
                     "message", "Booking rejected. Refund will be processed.",
@@ -628,7 +675,7 @@ public class BookingController {
                     booking.getSeatsBooked()
             );
 
-            emailService.sendOtpEmail(driverEmail, "Booking Cancelled", subject + "\n\n" + body);
+            emailService.sendEmail(driverEmail, subject, body);
 
             // Send cancellation email to passenger (the one who cancelled)
             emailService.sendRideCancelledToPassenger(updatedBooking, "You cancelled this booking");

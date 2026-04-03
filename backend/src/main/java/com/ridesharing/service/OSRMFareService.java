@@ -76,11 +76,10 @@ public class OSRMFareService {
     public double calculateFare(String sourceLon, String sourceLat,
                                 String destLon, String destLat) {
         try {
-            String url = UriComponentsBuilder.fromHttpUrl(OSRM_URL)
-                    .path("/route/v1/driving/{sourceLon},{sourceLat};{destLon},{destLat}")
-                    .queryParam("overview", "false")
-                    .buildAndExpand(sourceLon, sourceLat, destLon, destLat)
-                    .toUriString();
+            String url = OSRM_URL + "/route/v1/driving/"
+                    + sourceLon + "," + sourceLat + ";"
+                    + destLon + "," + destLat
+                    + "?overview=false";
 
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
@@ -93,7 +92,7 @@ public class OSRMFareService {
 
         } catch (Exception e) {
             e.printStackTrace();
-            return 100.0; // Default fallback
+            return 100.0;
         }
     }
 
@@ -109,11 +108,13 @@ public class OSRMFareService {
         }
 
         try {
-            String url = UriComponentsBuilder.fromHttpUrl(OSRM_URL)
-                    .path("/route/v1/driving/{sourceLon},{sourceLat};{destLon},{destLat}")
-                    .queryParam("overview", "false")
-                    .buildAndExpand(sourceLon, sourceLat, destLon, destLat)
-                    .toUriString();
+            // Build URL directly to avoid encoding issues with coordinates
+            String url = OSRM_URL + "/route/v1/driving/"
+                    + sourceLon + "," + sourceLat + ";"
+                    + destLon + "," + destLat
+                    + "?overview=false";
+
+            System.out.println("🗺 OSRM request: " + url);
 
             String response = restTemplate.getForObject(url, String.class);
             JsonNode root = objectMapper.readTree(response);
@@ -122,11 +123,13 @@ public class OSRMFareService {
             double distanceMeters = route.path("distance").asDouble();
             double distanceKm = distanceMeters / 1000.0;
 
+            System.out.println("🗺 OSRM distance: " + distanceMeters + "m = " + distanceKm + "km");
+
             distanceCache.put(cacheKey, distanceKm);
             return distanceKm;
 
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("❌ OSRM error: " + e.getMessage());
             return 100.0;
         }
     }

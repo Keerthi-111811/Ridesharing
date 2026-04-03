@@ -74,6 +74,15 @@ public class RouteMatchingService {
             return ride;
         }
 
+        // Reject if passenger's destination matches driver's source (wrong direction)
+        if (calculateStringSimilarity(ride.getSource(), searchDest) > 0.8) {
+            return null;
+        }
+        // Reject if passenger's source matches driver's destination (wrong direction)
+        if (calculateStringSimilarity(ride.getDestination(), searchSource) > 0.8) {
+            return null;
+        }
+
         // Geocode ride locations (cached)
         double[] rideSourceCoords = osrmService.getCoordinates(ride.getSource());
         double[] rideDestCoords = osrmService.getCoordinates(ride.getDestination());
@@ -81,6 +90,23 @@ public class RouteMatchingService {
         if (rideSourceCoords == null || rideDestCoords == null) {
             return null;
         }
+
+        // Direction check: passenger's pickup must be closer to driver's start than passenger's dropoff
+        // This ensures the passenger is travelling in the same direction as the driver
+        try {
+            double distToPickup = osrmService.getDistanceInKm(
+                    String.valueOf(rideSourceCoords[0]), String.valueOf(rideSourceCoords[1]),
+                    String.valueOf(searchSourceCoords[0]), String.valueOf(searchSourceCoords[1])
+            );
+            double distToDropoff = osrmService.getDistanceInKm(
+                    String.valueOf(rideSourceCoords[0]), String.valueOf(rideSourceCoords[1]),
+                    String.valueOf(searchDestCoords[0]), String.valueOf(searchDestCoords[1])
+            );
+            // Pickup must be closer to driver's start than dropoff (same direction)
+            if (distToPickup >= distToDropoff) {
+                return null;
+            }
+        } catch (Exception ignored) {}
 
         MatchResult result = calculateAlongRouteScore(
                 ride, searchSource, searchDest,

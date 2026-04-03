@@ -8,11 +8,15 @@ public class BookingResponseDto {
     private Long rideId;
     private String source;
     private String destination;
+    private String passengerSource;
+    private String passengerDestination;
     private Integer seatsBooked;
     private Double totalFare;
     private String status;
     private String driverName;
     private String passengerName;
+    private String passengerEmail;
+    private String passengerPhone;
     private LocalDateTime rideDateTime;
     private String vehicleModel;
     private String rideStatus;  // Make sure this field exists
@@ -33,12 +37,20 @@ public class BookingResponseDto {
                 this.vehicleModel = booking.getRide().getVehicleModel();
             }
 
+            // Use passenger's actual segment if it's a partial match booking
+            this.passengerSource = booking.getPassengerSource() != null
+                    ? booking.getPassengerSource() : this.source;
+            this.passengerDestination = booking.getPassengerDestination() != null
+                    ? booking.getPassengerDestination() : this.destination;
+
             if (booking.getDriver() != null) {
                 this.driverName = booking.getDriver().getName();
             }
 
             if (booking.getPassenger() != null) {
                 this.passengerName = booking.getPassenger().getName();
+                this.passengerEmail = booking.getPassenger().getEmail();
+                this.passengerPhone = booking.getPassenger().getPhone();
             }
         }
     }
@@ -59,6 +71,12 @@ public class BookingResponseDto {
     public String getDestination() { return destination; }
     public void setDestination(String destination) { this.destination = destination; }
 
+    public String getPassengerSource() { return passengerSource; }
+    public void setPassengerSource(String passengerSource) { this.passengerSource = passengerSource; }
+
+    public String getPassengerDestination() { return passengerDestination; }
+    public void setPassengerDestination(String passengerDestination) { this.passengerDestination = passengerDestination; }
+
     public Integer getSeatsBooked() { return seatsBooked; }
     public void setSeatsBooked(Integer seatsBooked) { this.seatsBooked = seatsBooked; }
 
@@ -73,6 +91,12 @@ public class BookingResponseDto {
 
     public String getPassengerName() { return passengerName; }
     public void setPassengerName(String passengerName) { this.passengerName = passengerName; }
+
+    public String getPassengerEmail() { return passengerEmail; }
+    public void setPassengerEmail(String passengerEmail) { this.passengerEmail = passengerEmail; }
+
+    public String getPassengerPhone() { return passengerPhone; }
+    public void setPassengerPhone(String passengerPhone) { this.passengerPhone = passengerPhone; }
 
     public LocalDateTime getRideDateTime() { return rideDateTime; }
     public void setRideDateTime(LocalDateTime rideDateTime) { this.rideDateTime = rideDateTime; }

@@ -8,9 +8,11 @@ import com.ridesharing.entity.Payment;
 import com.ridesharing.entity.PaymentStatus;
 import com.ridesharing.entity.User;
 import com.ridesharing.repository.PaymentRepository;
+import org.springframework.transaction.annotation.Transactional;
 import com.ridesharing.repository.UserRepository;
 import com.ridesharing.repository.BookingRepository;
 import com.ridesharing.service.FirebaseService;
+import com.ridesharing.service.EmailService;
 import com.razorpay.Order;
 import com.razorpay.RazorpayClient;
 import com.razorpay.RazorpayException;
@@ -49,6 +51,9 @@ public class PaymentController {
     @Autowired
     private FirebaseService firebaseService;
 
+    @Autowired
+    private EmailService emailService;
+
     @Value("${razorpay.key.id}")
     private String razorpayKeyId;
 
@@ -61,56 +66,61 @@ public class PaymentController {
     }
 
     @GetMapping("/history")
+    @Transactional(readOnly = true)
     public ResponseEntity<?> getPaymentHistory(@RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-
             Optional<User> userOpt = resolveUser(token);
-            if (userOpt.isEmpty()) {
-                return ResponseEntity.ok(new ArrayList<>());
-            }
+            if (userOpt.isEmpty()) return ResponseEntity.ok(new ArrayList<>());
 
             User user = userOpt.get();
-            System.out.println("🔍 Getting payment history for user: " + user.getId() + ", email: " + user.getEmail());
+            List<Map<String, Object>> history = new ArrayList<>();
 
-            // Get payments where user is either passenger OR driver
-            List<Payment> payments = new ArrayList<>();
+            // Bookings where user is passenger
+            List<Booking> passengerBookings = bookingRepository.findByPassenger_Id(user.getId());
+            for (Booking b : passengerBookings) {
+                if (b.getRide() == null) continue;
+                Map<String, Object> item = new HashMap<>();
+                item.put("id", b.getId());
+                item.put("createdAt", b.getBookedAt());
+                item.put("source", b.getRide().getSource());
+                item.put("destination", b.getRide().getDestination());
+                item.put("role", "Passenger");
+                item.put("type", "debit");
+                item.put("amount", b.getTotalFare() != null ? b.getTotalFare() : 0);
+                item.put("status", b.getStatus());
+                item.put("otherPersonName", b.getDriver() != null ? b.getDriver().getName() : "—");
+                history.add(item);
+            }
 
-            // Payments where user is passenger
-            List<Payment> passengerPayments = paymentRepository.findByUser_Id(user.getId());
-            System.out.println("🔍 Found " + passengerPayments.size() + " payments where user is passenger");
-            payments.addAll(passengerPayments);
-
-            // Also get payments where user is driver (through bookings)
+            // Bookings where user is driver
             List<Booking> driverBookings = bookingRepository.findByRide_Driver_Id(user.getId());
-            System.out.println("🔍 Found " + driverBookings.size() + " bookings where user is driver");
-
-            for (Booking booking : driverBookings) {
-                List<Payment> bookingPayments = paymentRepository.findByBooking_Id(booking.getId());
-                System.out.println("🔍 Booking ID " + booking.getId() + " has " + bookingPayments.size() + " payments");
-                if (!bookingPayments.isEmpty()) {
-                    payments.addAll(bookingPayments);
-                }
+            for (Booking b : driverBookings) {
+                if (b.getRide() == null) continue;
+                Map<String, Object> item = new HashMap<>();
+                item.put("id", "d-" + b.getId());
+                item.put("createdAt", b.getBookedAt());
+                item.put("source", b.getRide().getSource());
+                item.put("destination", b.getRide().getDestination());
+                item.put("role", "Driver");
+                item.put("type", "credit");
+                item.put("amount", b.getTotalFare() != null ? b.getTotalFare() : 0);
+                item.put("status", b.getStatus());
+                item.put("otherPersonName", b.getPassenger() != null ? b.getPassenger().getName() : "—");
+                history.add(item);
             }
 
-            // Remove duplicates if any
-            List<Payment> uniquePayments = payments.stream()
-                    .distinct()
-                    .collect(Collectors.toList());
+            // Sort by date descending
+            history.sort((a, b2) -> {
+                java.time.LocalDateTime da = (java.time.LocalDateTime) a.get("createdAt");
+                java.time.LocalDateTime db = (java.time.LocalDateTime) b2.get("createdAt");
+                if (da == null && db == null) return 0;
+                if (da == null) return 1;
+                if (db == null) return -1;
+                return db.compareTo(da);
+            });
 
-            System.out.println("🔍 Total unique payments: " + uniquePayments.size());
-
-            List<PaymentDTO> paymentDTOs = new ArrayList<>();
-            for (Payment payment : uniquePayments) {
-                PaymentDTO dto = new PaymentDTO(payment);
-                System.out.println("🔍 Payment ID " + payment.getId() +
-                        ": source=" + dto.getSource() +
-                        ", destination=" + dto.getDestination());
-                paymentDTOs.add(dto);
-            }
-
-            return ResponseEntity.ok(paymentDTOs);
-
+            return ResponseEntity.ok(history);
         } catch (Exception e) {
             e.printStackTrace();
             return ResponseEntity.ok(new ArrayList<>());
@@ -199,10 +209,10 @@ public class PaymentController {
                 System.out.println("⚠️ Signature verification failed but payment might be successful");
             }
 
-            // Update booking regardless of signature (since payment succeeded in Razorpay)
+            // Update booking - keep as payment_completed so driver can accept/reject
             booking.setPaymentId(paymentId);
             booking.setSignature(signature);
-            booking.setStatus("confirmed");
+            booking.setStatus("payment_completed");
             bookingRepository.save(booking);
 
             // Check if payment record already exists
@@ -224,7 +234,7 @@ public class PaymentController {
                 System.out.println("✅ Payment record created");
             }
 
-            // Send notifications via Firebase
+            // Send notification to passenger confirming payment
             Map<String, Object> passengerNotification = new HashMap<>();
             passengerNotification.put("type", "PAYMENT_SUCCESS");
             passengerNotification.put("bookingId", booking.getId());
@@ -237,17 +247,55 @@ public class PaymentController {
                     passengerNotification
             );
 
+            // Notify driver that a paid booking request is waiting for acceptance
             Map<String, Object> driverNotification = new HashMap<>();
-            driverNotification.put("type", "BOOKING_CONFIRMED");
+            driverNotification.put("type", "booking_request");
             driverNotification.put("bookingId", booking.getId());
-            driverNotification.put("paymentId", paymentId);
             driverNotification.put("passengerName", booking.getPassenger().getName());
+            driverNotification.put("passengerEmail", booking.getPassenger().getEmail());
+            driverNotification.put("passengerPhone", booking.getPassenger().getPhone());
+            driverNotification.put("source", booking.getRide().getSource());
+            driverNotification.put("destination", booking.getRide().getDestination());
+            driverNotification.put("seats", booking.getSeatsBooked());
+            driverNotification.put("totalFare", booking.getTotalFare());
+            driverNotification.put("rideId", booking.getRide().getId());
+            driverNotification.put("dateTime", booking.getRide().getDateTime().toString());
+            driverNotification.put("paymentStatus", "COMPLETED");
             driverNotification.put("timestamp", System.currentTimeMillis());
 
             firebaseService.sendNotificationToUser(
                     booking.getDriver().getId().toString(),
                     driverNotification
             );
+
+            // Send email to driver about the paid booking request
+            String driverEmail = booking.getDriver().getEmail();
+            String driverSubject = "💰 Paid Booking Request - RideSync";
+            String driverBody = String.format(
+                    "Hello %s,\n\n" +
+                            "You have received a PAID booking request!\n\n" +
+                            "📋 Booking Details:\n" +
+                            "------------------------\n" +
+                            "Passenger: %s\n" +
+                            "From: %s\n" +
+                            "To: %s\n" +
+                            "Date & Time: %s\n" +
+                            "Seats: %d\n" +
+                            "Total Fare: ₹%.2f\n" +
+                            "Payment Status: COMPLETED\n\n" +
+                            "Please login to ACCEPT or REJECT this booking.\n\n" +
+                            "If you reject, the passenger will get a full refund.\n\n" +
+                            "Thank you,\n" +
+                            "RideSync Team",
+                    booking.getDriver().getName(),
+                    booking.getPassenger().getName(),
+                    booking.getRide().getSource(),
+                    booking.getRide().getDestination(),
+                    booking.getRide().getDateTime().format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy hh:mm a")),
+                    booking.getSeatsBooked(),
+                    booking.getTotalFare()
+            );
+            emailService.sendEmail(driverEmail, driverSubject, driverBody);
 
             Map<String, Object> response = new HashMap<>();
             response.put("message", "Payment verified successfully");

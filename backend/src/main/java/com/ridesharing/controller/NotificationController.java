@@ -31,9 +31,9 @@ public class NotificationController {
     public ResponseEntity<?> getNotifications(@RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
+            String subject = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = userRepository.findByEmailOrPhone(subject, subject);
             if (userOpt.isEmpty()) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));
@@ -50,15 +50,30 @@ public class NotificationController {
                     .body(Map.of("message", "Failed to fetch notifications: " + e.getMessage()));
         }
     }
+    @GetMapping("/test-firebase")
+public ResponseEntity<?> testFirebase(@RequestParam String userId,
+                                      @RequestHeader("Authorization") String authHeader) {
+    // Create a test notification payload
+    Map<String, Object> testNotif = new HashMap<>();
+    testNotif.put("type", "TEST");
+    testNotif.put("message", "Test from backend");
+    testNotif.put("createdAt", System.currentTimeMillis());
+    testNotif.put("read", false);
+    
+    // Send it via your FirebaseService
+    firebaseService.sendNotificationToUser(userId, testNotif);
+    
+    return ResponseEntity.ok(Map.of("message", "Test notification sent to user " + userId));
+}
 
     @PutMapping("/{notificationId}/read")
     public ResponseEntity<?> markAsRead(@PathVariable String notificationId,
                                         @RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
+            String subject = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = userRepository.findByEmailOrPhone(subject, subject);
             if (userOpt.isEmpty()) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));
@@ -80,9 +95,9 @@ public class NotificationController {
     public ResponseEntity<?> markAllAsRead(@RequestHeader("Authorization") String authHeader) {
         try {
             String token = authHeader.replace("Bearer ", "");
-            String email = jwtUtil.extractUsername(token);
+            String subject = jwtUtil.extractUsername(token);
 
-            Optional<User> userOpt = userRepository.findByEmail(email);
+            Optional<User> userOpt = userRepository.findByEmailOrPhone(subject, subject);
             if (userOpt.isEmpty()) {
                 return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                         .body(Map.of("message", "User not found"));

@@ -241,6 +241,8 @@ public class AuthController {
             response.put("licensePlate", user.getLicensePlate());
             response.put("vehicleCapacity", user.getVehicleCapacity());
             response.put("userType", user.getUserType() != null ? user.getUserType() : "passenger");
+            response.put("rating", user.getRating() != null ? user.getRating() : 0.0);
+            response.put("totalRatings", user.getTotalRatings() != null ? user.getTotalRatings() : 0);
 
             return ResponseEntity.ok(response);
 
@@ -470,6 +472,12 @@ public class AuthController {
             }
 
             User user = userOpt.get();
+
+            // Never overwrite admin role
+            if ("admin".equals(user.getUserType())) {
+                return ResponseEntity.ok(Map.of("message", "Admin role preserved", "userType", "admin"));
+            }
+
             user.setUserType(userType);
             userRepository.save(user);
 

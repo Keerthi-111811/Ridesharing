@@ -124,4 +124,26 @@ public class PayoutService {
     public List<Transaction> getTransactionHistory(Long userId) {
         return transactionRepository.findByUser_Id(userId);
     }
+
+    // Refund payment to passenger wallet (when driver cancels)
+    @Transactional
+    public Transaction refundToPassengerWallet(Booking booking) {
+        User passenger = booking.getPassenger();
+        Wallet wallet = initializeWallet(passenger);
+
+        Transaction transaction = new Transaction();
+        transaction.setUser(passenger);
+        transaction.setBooking(booking);
+        transaction.setAmount(booking.getTotalFare());
+        transaction.setType("CREDIT");
+        transaction.setStatus("COMPLETED");
+        transaction.setCreatedAt(LocalDateTime.now());
+        transaction.setCompletedAt(LocalDateTime.now());
+
+        wallet.setBalance(wallet.getBalance() + booking.getTotalFare());
+        wallet.setLastUpdated(LocalDateTime.now());
+        walletRepository.save(wallet);
+
+        return transactionRepository.save(transaction);
+    }
 }

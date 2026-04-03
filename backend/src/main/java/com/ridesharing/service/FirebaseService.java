@@ -8,6 +8,10 @@ import org.springframework.stereotype.Service;
 import javax.annotation.PostConstruct;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
@@ -15,24 +19,35 @@ import java.util.concurrent.TimeUnit;
 @Service
 public class FirebaseService {
 
+    private static final String DB_URL = "https://ride-sharing-cf927-default-rtdb.asia-southeast1.firebasedatabase.app";
+    private final HttpClient httpClient = HttpClient.newHttpClient();
+
     private DatabaseReference databaseReference;
     private boolean isInitialized = false;
+    private GoogleCredentials credentials;
 
     @PostConstruct
     public void initialize() {
         try {
-            // Path to your service account key file
             String serviceAccountPath = "src/main/resources/firebase-service-account.json";
 
-            FileInputStream serviceAccount = new FileInputStream(serviceAccountPath);
+            // Load credentials for REST API calls
+            try (FileInputStream credStream = new FileInputStream(serviceAccountPath)) {
+                credentials = GoogleCredentials
+                        .fromStream(credStream)
+                        .createScoped(List.of("https://www.googleapis.com/auth/firebase.database",
+                                              "https://www.googleapis.com/auth/userinfo.email"));
+            }
 
-            FirebaseOptions options = FirebaseOptions.builder()
-                    .setCredentials(GoogleCredentials.fromStream(serviceAccount))
-                    .setDatabaseUrl("https://ride-sharing-cf927-default-rtdb.asia-southeast1.firebasedatabase.app")
-                    .build();
-
+            // Init Admin SDK for reads/mark-as-read
             if (FirebaseApp.getApps().isEmpty()) {
-                FirebaseApp.initializeApp(options);
+                try (FileInputStream sdkStream = new FileInputStream(serviceAccountPath)) {
+                    FirebaseOptions options = FirebaseOptions.builder()
+                            .setCredentials(GoogleCredentials.fromStream(sdkStream))
+                            .setDatabaseUrl(DB_URL)
+                            .build();
+                    FirebaseApp.initializeApp(options);
+                }
             }
 
             databaseReference = FirebaseDatabase.getInstance().getReference();
@@ -46,26 +61,46 @@ public class FirebaseService {
     }
 
     public void sendNotificationToUser(String userId, Map<String, Object> notificationData) {
-        if (!isInitialized || databaseReference == null) {
-            System.err.println("⚠️ Firebase not initialized. Cannot send notification.");
-            return;
-        }
-
+        System.out.println("📬 sendNotificationToUser called for userId=" + userId);
         try {
-            Map<String, Object> notification = new HashMap<>();
-            notification.putAll(notificationData);
+            Map<String, Object> notification = new HashMap<>(notificationData);
             notification.put("read", false);
             notification.put("createdAt", System.currentTimeMillis());
 
-            databaseReference
-                    .child("notifications")
-                    .child(userId)
-                    .push()
-                    .setValueAsync(notification);
+            // Build JSON manually
+            StringBuilder json = new StringBuilder("{");
+            for (Map.Entry<String, Object> entry : notification.entrySet()) {
+                json.append("\"").append(entry.getKey()).append("\":");
+                Object val = entry.getValue();
+                if (val == null) json.append("null");
+                else if (val instanceof String) json.append("\"").append(((String) val).replace("\"", "\\\"")).append("\"");
+                else json.append(val);
+                json.append(",");
+            }
+            if (json.charAt(json.length() - 1) == ',') json.deleteCharAt(json.length() - 1);
+            json.append("}");
 
-            System.out.println("📨 Notification sent to user: " + userId);
+            // Refresh credentials token
+            credentials.refreshIfExpired();
+            String token = credentials.getAccessToken().getTokenValue();
+
+            // POST to Firebase REST API — uses plain HTTPS, no WebSocket
+            String url = DB_URL + "/notifications/" + userId + ".json?auth=" + token;
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(url))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(json.toString()))
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                System.out.println("✅ Notification written via REST for userId=" + userId + " type=" + notificationData.get("type"));
+            } else {
+                System.err.println("❌ Firebase REST write failed: " + response.statusCode() + " " + response.body());
+            }
         } catch (Exception e) {
-            System.err.println("❌ Error sending notification: " + e.getMessage());
+            System.err.println("❌ Error sending notification to user " + userId + ": " + e.getMessage());
+            e.printStackTrace();
         }
     }
 
@@ -181,6 +216,15 @@ public class FirebaseService {
         }
         if (updateData.containsKey("reason")) {
             notification.put("reason", updateData.get("reason"));
+        }
+        if (updateData.containsKey("amount")) {
+            notification.put("amount", updateData.get("amount"));
+        }
+        if (updateData.containsKey("refunded")) {
+            notification.put("refunded", updateData.get("refunded"));
+        }
+        if (updateData.containsKey("refundAmount")) {
+            notification.put("refundAmount", updateData.get("refundAmount"));
         }
         if (updateData.containsKey("rideId")) {
             notification.put("rideId", updateData.get("rideId"));
